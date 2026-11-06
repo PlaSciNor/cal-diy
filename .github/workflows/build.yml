@@ -83,21 +83,25 @@ jobs:
 
       - name: Test de démarrage
         run: |
-          docker run -d --name t --network host \
+          docker images
+          if ! docker run -d --name t --network host \
             -e DATABASE_URL=postgresql://build:build@localhost:5432/calendso \
             -e DATABASE_DIRECT_URL=postgresql://build:build@localhost:5432/calendso \
             -e DATABASE_HOST=localhost:5432 \
             -e NEXTAUTH_SECRET=test-only-secret-not-used-in-prod \
             -e CALENDSO_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef \
             -e NEXT_PUBLIC_WEBAPP_URL=http://localhost:3000 \
-            ${IMAGE}:${{ steps.tag.outputs.tag }}
+            ${IMAGE}:${{ steps.tag.outputs.tag }} 2>/tmp/run.err; then
+            echo "::error::docker run : $(tr '\n' ' ' < /tmp/run.err)"; exit 1
+          fi
           for i in $(seq 1 90); do
             c=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/auth/login || true)
             echo "essai $i : $c"
             if [ "$c" = 200 ] || [ "$c" = 307 ]; then docker rm -f t; exit 0; fi
             sleep 5
           done
-          docker logs --tail 200 t; exit 1
+          docker logs --tail 200 t
+          echo "::error::démarrage KO : $(docker logs --tail 40 t 2>&1 | tr '\n' ' ' | tail -c 3000)"; exit 1
 
       - name: Publier
         run: |
