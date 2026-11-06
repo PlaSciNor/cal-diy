@@ -1,0 +1,106 @@
+# Compile l'image Docker de Cal.diy (fork libre MIT de Cal.com) pour rdv.plasci-normandie.org
+# et la publie sur ghcr.io/plascinor/cal-diy. Le serveur ne fait que la télécharger.
+# Aucun secret ici : la base Postgres sert uniquement pendant la compilation et est jetée.
+name: Build Cal.diy
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit, branche ou tag de calcom/cal.diy à compiler"
+        required: true
+        default: "2eb48eccd8aca8a0c0ffabf28cf92e298b33ecee"
+  push:
+    branches: [main]
+    paths: [".github/workflows/build.yml", "CAL_DIY_REF"]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/plascinor/cal-diy
+  WEBAPP_URL: https://rdv.plasci-normandie.org
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    services:
+      database:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: build
+          POSTGRES_PASSWORD: build
+          POSTGRES_DB: calendso
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U build" --health-interval 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Choisir la version
+        id: ref
+        run: |
+          REF="${{ github.event.inputs.ref }}"
+          [ -z "$REF" ] && REF="$(tr -d '[:space:]' < CAL_DIY_REF)"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: calcom/cal.diy
+          ref: ${{ steps.ref.outputs.ref }}
+          path: src
+
+      - name: Étiquette de l'image
+        id: tag
+        run: echo "tag=$(git -C src rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Libérer de la place sur le disque du runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compiler
+        working-directory: src
+        run: |
+          docker build --network host \
+            --build-arg NEXT_PUBLIC_WEBAPP_URL=${WEBAPP_URL} \
+            --build-arg NEXT_PUBLIC_LICENSE_CONSENT=agree \
+            --build-arg CALCOM_TELEMETRY_DISABLED=1 \
+            --build-arg MAX_OLD_SPACE_SIZE=12288 \
+            --build-arg DATABASE_URL=postgresql://build:build@localhost:5432/calendso \
+            --label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
+            --label org.opencontainers.image.revision=$(git rev-parse HEAD) \
+            -t ${IMAGE}:${{ steps.tag.outputs.tag }} -t ${IMAGE}:latest .
+
+      - name: Test de démarrage
+        run: |
+          docker run -d --name t --network host \
+            -e DATABASE_URL=postgresql://build:build@localhost:5432/calendso \
+            -e DATABASE_DIRECT_URL=postgresql://build:build@localhost:5432/calendso \
+            -e DATABASE_HOST=localhost:5432 \
+            -e NEXTAUTH_SECRET=test-only-secret-not-used-in-prod \
+            -e CALENDSO_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef \
+            -e NEXT_PUBLIC_WEBAPP_URL=http://localhost:3000 \
+            ${IMAGE}:${{ steps.tag.outputs.tag }}
+          for i in $(seq 1 90); do
+            c=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/auth/login || true)
+            echo "essai $i : $c"
+            if [ "$c" = 200 ] || [ "$c" = 307 ]; then docker rm -f t; exit 0; fi
+            sleep 5
+          done
+          docker logs --tail 200 t; exit 1
+
+      - name: Publier
+        run: |
+          docker push ${IMAGE}:${{ steps.tag.outputs.tag }}
+          docker push ${IMAGE}:latest
+          echo "### Image publiée : \`${IMAGE}:${{ steps.tag.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
