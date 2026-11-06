@@ -84,7 +84,7 @@ jobs:
       - name: Test de démarrage
         run: |
           docker images
-          if ! docker run -d --name t --network host \
+          if ! docker run -d --name caltest --network host \
             -e DATABASE_URL=postgresql://build:build@localhost:5432/calendso \
             -e DATABASE_DIRECT_URL=postgresql://build:build@localhost:5432/calendso \
             -e DATABASE_HOST=localhost:5432 \
@@ -97,11 +97,11 @@ jobs:
           for i in $(seq 1 90); do
             c=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/auth/login || true)
             echo "essai $i : $c"
-            if [ "$c" = 200 ] || [ "$c" = 307 ]; then docker rm -f t; exit 0; fi
+            if [ "$c" = 200 ] || [ "$c" = 307 ]; then docker rm -f caltest; exit 0; fi
             sleep 5
           done
-          docker logs --tail 200 t
-          echo "::error::démarrage KO : $(docker logs --tail 40 t 2>&1 | tr '\n' ' ' | tail -c 3000)"; exit 1
+          docker logs --tail 200 caltest
+          echo "::error::démarrage KO : $(docker logs --tail 40 caltest 2>&1 | tr '\n' ' ' | tail -c 3000)"; exit 1
 
       - name: Publier
         run: |
